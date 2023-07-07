@@ -44,15 +44,11 @@ mappings_inverse = {
 
 # Function to map labels to binary or trinary labels (classes is a list)
 # Default simply maps labels to label name (as used in LIAR dataset)
-def map_labels(sample, classes=None):
+def map_labels(sample):
     label_name = mappings_inverse[sample['label']]
     sample['label_name'] = label_name
-    
-    if 2 in classes:
-        sample['binary_label'] = mappings['two-class'][label_name]
-    
-    if 3 in classes:
-        sample['trinary_label'] = mappings['three-class'][label_name]
+    sample['binary_label'] = mappings['two-class'][label_name]
+    sample['trinary_label'] = mappings['three-class'][label_name]
 
     return sample
 
@@ -67,33 +63,35 @@ def concanenate_columns(dataset, max_len=100, splits=['train', 'test', 'validati
         dataset[split] = dataset[split].map(lambda x: truncate(x, 'statement', max_len))
         columns = [dataset[split][col] for col in cols]
         concatenated_texts = [' [SEP] '.join(items) for items in zip(*columns)]
-        dataset[split].add_column('text', concatenated_texts)
+        dataset[split] = dataset[split].add_column('text', concatenated_texts)
     
     return dataset
 
 # loads the dataset and applies the above functions and mappings
-def load_data(path, split=None, remove_all=True, concat=False, max_len=75, classes=[2, 3]):
+def load_data(path, split=None, remove_all=True, concat=False, max_len=75):
     if split is not None:
         dataset = load_dataset(path, split=split)
-        dataset = dataset.map(lambda x: map_labels(x, classes=classes))
+        dataset = dataset.map(map_labels)
         return dataset
     
     dataset = load_dataset(path)
 
-    dataset['train'] = dataset['train'].map(lambda x: map_labels(x, classes=classes))
-    dataset['test'] = dataset['test'].map(lambda x: map_labels(x, classes=classes))
-    dataset['validation'] = dataset['validation'].map(lambda x: map_labels(x, classes=classes))
+    dataset['train'] = dataset['train'].map(map_labels)
+    dataset['test'] = dataset['test'].map(map_labels)
+    dataset['validation'] = dataset['validation'].map(map_labels)
 
-    cols_to_remove = dataset['train'].column_names
-    print(cols_to_remove)
-    
     if concat:
-        dataset = concanenate_columns(dataset)
+        dataset = concanenate_columns(dataset, max_len=max_len)
 
     if remove_all:
+        cols_to_remove = dataset['train'].column_names
+        cols_to_remove.remove('label')
         cols_to_remove.remove('binary_label')
         cols_to_remove.remove('trinary_label')
         cols_to_remove.remove('label_name')
+        cols_to_remove.remove('statement')
+        if concat:
+            cols_to_remove.remove('text')
         dataset = dataset.remove_columns(cols_to_remove)
 
     return dataset
@@ -112,13 +110,15 @@ def balance_dataset(dataset, split='train'):
 
     # Apply undersampling to balance the classes based on the minority class
     sampler = RandomUnderSampler(sampling_strategy='auto')
-    X_resampled, y_resampled = sampler.fit_resample(X_reshaped, y)
+    X_resampled, y_resampled, indices = sampler.fit_resample(X_reshaped, y)
 
+    data_dict = {
+        col: dataset[split][col][indices] for col in dataset[split].column_names
+    }
+    data_dict['text'] = X_resampled.squeeze(1)
+    data_dict['label'] = y_resampled
     # Create a new balanced dataset
-    balanced_dataset = Dataset.from_dict({
-        'text': X_resampled.squeeze(1),
-        'label': y_resampled
-    })
+    balanced_dataset = Dataset.from_dict(data_dict)
 
     return balanced_dataset
 
@@ -131,23 +131,28 @@ def display_samples(dataset, num_samples=5):
 def compute_metrics(eval_pred):
     metric = evaluate.load("accuracy")
     logits, labels = eval_pred
+    print(labels)
     predictions = np.argmax(logits, axis=1)
     return metric.compute(predictions=predictions, references=labels)
 
 def evaluate_performance(trainer, inputs):
+    from torch import from_numpy
+    
     # basic evaluation of model
     trainer.evaluate(inputs)
 
     # get label probability prediction
     y_pred = trainer.predict(inputs)
-    y_proba = softmax(y_pred.predictions)
+    pred = from_numpy(y_pred.predictions)
+
+    y_proba = softmax(pred)
 
     # get predicted labels and true labels
     y_true_labels = y_pred.label_ids
     y_pred_labels = np.argmax(y_proba, axis=1)
 
     for metric in [evaluate.load("f1"), evaluate.load("recall"), evaluate.load("precision")]:
-        print(metric.compute(predictions=y_pred_labels, references=y_true_labels))
+        print(metric.compute(predictions=y_pred_labels, references=y_true_labels, average='macro'))
 
     cm = confusion_matrix(y_true_labels, y_pred_labels)
     sns.heatmap(cm, annot=True)
