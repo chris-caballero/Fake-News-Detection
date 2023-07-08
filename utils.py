@@ -68,7 +68,7 @@ def concanenate_columns(dataset, max_len=100, splits=['train', 'test', 'validati
     return dataset
 
 # loads the dataset and applies the above functions and mappings
-def load_data(path, split=None, remove_all=True, concat=False, max_len=75):
+def load_data(path, split=None, remove_all=True, concat=False, max_len=75, label_type='label', cols=['statement', 'subject', 'speaker', 'context']):
     if split is not None:
         dataset = load_dataset(path, split=split)
         dataset = dataset.map(map_labels)
@@ -81,18 +81,21 @@ def load_data(path, split=None, remove_all=True, concat=False, max_len=75):
     dataset['validation'] = dataset['validation'].map(map_labels)
 
     if concat:
-        dataset = concanenate_columns(dataset, max_len=max_len)
+        dataset = concanenate_columns(dataset, max_len=max_len, cols=cols)
 
     if remove_all:
         cols_to_remove = dataset['train'].column_names
-        cols_to_remove.remove('label')
-        cols_to_remove.remove('binary_label')
-        cols_to_remove.remove('trinary_label')
-        cols_to_remove.remove('label_name')
-        cols_to_remove.remove('statement')
+        cols_to_remove.remove(label_type)
+        # cols_to_remove.remove('speaker')
+        # cols_to_remove.remove('subject')
+        # cols_to_remove.remove('context')
+        # cols_to_remove.remove('statement')
         if concat:
             cols_to_remove.remove('text')
         dataset = dataset.remove_columns(cols_to_remove)
+    
+    if label_type != 'label':
+        dataset = dataset.rename_column(label_type, 'label')
 
     return dataset
 
@@ -110,15 +113,14 @@ def balance_dataset(dataset, split='train'):
 
     # Apply undersampling to balance the classes based on the minority class
     sampler = RandomUnderSampler(sampling_strategy='auto')
-    X_resampled, y_resampled, indices = sampler.fit_resample(X_reshaped, y)
+    X_resampled, y_resampled = sampler.fit_resample(X_reshaped, y)
 
-    data_dict = {
-        col: dataset[split][col][indices] for col in dataset[split].column_names
-    }
-    data_dict['text'] = X_resampled.squeeze(1)
-    data_dict['label'] = y_resampled
     # Create a new balanced dataset
-    balanced_dataset = Dataset.from_dict(data_dict)
+    balanced_dataset = Dataset.from_dict({
+        'text': X_resampled.squeeze(1),
+        'label': y_resampled
+    })
+
 
     return balanced_dataset
 
@@ -158,9 +160,9 @@ def evaluate_performance(trainer, inputs):
     sns.heatmap(cm, annot=True)
     plt.show()
 
-def get_roc_curve(trainer, inputs):
+def get_roc_curve(model, inputs):
     y_pred = trainer.predict(inputs)
-    y_proba = softmax(y_pred.predictions)
+    y_proba = softmax(torch.tensor(y_pred.predictions))
 
     y_true_labels = y_pred.label_ids
 
@@ -168,8 +170,12 @@ def get_roc_curve(trainer, inputs):
 
     return fpr, tpr, threshold
 
+
 def plot_roc_curves(model, inputs, label='Train Classifier'):
-    fpr, tpr, _ = get_roc_curve(model, inputs)
+    def plot_roc_curve(fpr, tpr, label=None, color='b'):
+        plt.plot(fpr, tpr, label=label, color=color)
+
+    fpr, tpr, threshold = get_roc_curve(model, inputs)
 
     plt.figure(figsize=(7, 5))
     plt.title(f'ROC Curve for {label}')
@@ -178,7 +184,35 @@ def plot_roc_curves(model, inputs, label='Train Classifier'):
     plt.ylabel('True Positive Rate')
     plt.axis([-.05, 1, 0, 1.05])
 
-    plt.plot(fpr, tpr, label=label, color=sns.color_palette('hls')[0])
+
+    palette = sns.color_palette('hls', 8)
+    plot_roc_curve(fpr, tpr, label=label, color=sns.color_palette('hls')[0])
 
     plt.legend()
     plt.show()
+
+def display_counts(dataset, split=None):
+    if split:
+        sns.countplot(data=pd.DataFrame(dataset[split]), x='label', palette=palette)
+    else:
+        sns.countplot(data=pd.DataFrame(dataset), x='label', palette=palette)
+        
+    plt.title('Label Count')
+    plt.xlabel('Labels')
+    plt.ylabel('Count')
+    plt.show()
+
+def compute_metrics(eval_pred):
+    metric = evaluate.load("accuracy")
+    logits, labels = eval_pred
+    predictions = np.argmax(logits, axis=1)
+    return metric.compute(predictions=predictions, references=labels)
+
+
+# def balance_dataset(dataset, split='train'):    
+#     df = pd.DataFrame(dataset[split])
+#     grouped_df = df.groupby('label')
+#     min_class = grouped_df.size().min()
+#     balanced_df = grouped_df.apply(lambda x: x.sample(n=min_class, replace=False)).reset_index(drop=True)
+    
+#     return Dataset.from_pandas(balanced_df)
