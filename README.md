@@ -28,7 +28,7 @@ The model fits the data non-trivially, which is impressive given how complex is 
 <div>
   <img src="imgs/train-result.png" alt="Description" width="300" height="250">
   <img src="imgs/test-result.png" alt="Description" width="300" height="250">
-  <img src="imgs/val-result.png" alt="Description" width="300" height="250">
+  <img src="imgs/validation-result.png" alt="Description" width="300" height="250">
 </div>
 
 
