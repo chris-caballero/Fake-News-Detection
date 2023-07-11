@@ -1,7 +1,9 @@
 import evaluate
 import numpy as np
+import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+from torch import tensor, from_numpy
 from torch.nn.functional import softmax
 from datasets import load_dataset, Dataset
 from imblearn.under_sampling import RandomUnderSampler
@@ -9,6 +11,12 @@ from sklearn.metrics import confusion_matrix, roc_curve
 
 palette = sns.color_palette('hls')
 truth_palette = sns.color_palette('hls', 15)[:6]
+
+multiclass = {
+    'binary_label': 2,
+    'trinary_label': 3,
+    'default': 6, 
+}
 
 mappings = {
     'two-class': {
@@ -53,60 +61,66 @@ def map_labels(sample):
     return sample
 
 # Concatenate columns with [SEP] to add more information for classification
-def concanenate_columns(dataset, max_len=100, splits=['train', 'test', 'validation'], cols=['statement', 'subject', 'speaker', 'context']):
+def concanenate_columns(dataset, max_len=100, cols=['statement', 'subject', 'speaker', 'context']):
     def truncate(sample, col, max_len):
         return {
             col: sample[col][:max_len] if len(sample[col]) > max_len else sample[col]
         }
-
-    for split in splits:
-        dataset[split] = dataset[split].map(lambda x: truncate(x, 'statement', max_len))
-        columns = [dataset[split][col] for col in cols]
-        concatenated_texts = [' [SEP] '.join(items) for items in zip(*columns)]
-        dataset[split] = dataset[split].add_column('text', concatenated_texts)
+    
+    dataset = dataset.map(lambda x: truncate(x, 'statement', max_len))
+    columns = [dataset[col] for col in cols]
+    concatenated_texts = [' [SEP] '.join(items) for items in zip(*columns)]
+    dataset = dataset.add_column('text', concatenated_texts)
     
     return dataset
 
-# loads the dataset and applies the above functions and mappings
-def load_data(path, split=None, remove_all=True, concat=False, max_len=75, label_type='label', cols=['statement', 'subject', 'speaker', 'context']):
-    if split is not None:
+def load_split(path=None, data=None, remove_all=True, max_len=100, split='train', label_type='label', cols=['statement', 'subject', 'speaker', 'context']):
+    if data is not None:
+        dataset = Dataset.from_pandas(data)
+    else:
         dataset = load_dataset(path, split=split)
-        dataset = dataset.map(map_labels)
-        return dataset
-    
-    dataset = load_dataset(path)
-
-    dataset['train'] = dataset['train'].map(map_labels)
-    dataset['test'] = dataset['test'].map(map_labels)
-    dataset['validation'] = dataset['validation'].map(map_labels)
-
-    if concat:
-        dataset = concanenate_columns(dataset, max_len=max_len, cols=cols)
-
+        
+    dataset = dataset.map(map_labels)
+    dataset = concanenate_columns(dataset, max_len=max_len, cols=cols)
     if remove_all:
-        cols_to_remove = dataset['train'].column_names
+        cols_to_remove = dataset.column_names
         cols_to_remove.remove(label_type)
-        # cols_to_remove.remove('speaker')
-        # cols_to_remove.remove('subject')
-        # cols_to_remove.remove('context')
-        # cols_to_remove.remove('statement')
-        if concat:
-            cols_to_remove.remove('text')
+        cols_to_remove.remove('text')
         dataset = dataset.remove_columns(cols_to_remove)
     
     if label_type != 'label':
         dataset = dataset.rename_column(label_type, 'label')
+    
+    return dataset
+        
+        
 
+# loads the dataset and applies the above functions and mappings
+def load_data(path=None, data=None, split=None, remove_all=True, max_len=100, label_type='label', cols=['statement', 'subject', 'speaker', 'context']):
+    if split is not None:
+        dataset = load_split(path=path, split=split, cols=cols, label_type=label_type)
+    elif data is not None:
+        dataset = load_split(data=data, cols=cols, label_type=label_type)
+    else:
+        dataset = {}
+        for split in ['train', 'test', 'validation']:
+            dataset[split] = load_split(path=path, split=split, cols=cols, label_type=label_type)
+    
     return dataset
 
 # balances dataset by minority class
-def balance_dataset(dataset, split='train'):
-    # Separate features and labels
-    if 'text' not in dataset[split].column_names:
-        X = np.array(dataset[split]['statement'])
+def balance_dataset(dataset, split=None):
+    if split is not None:
+        data = dataset[split]
     else:
-        X = np.array(dataset[split]['text'])
-    y = np.array(dataset[split]['label'])
+        data = dataset
+        
+    # Separate features and labels
+    if 'text' not in data.column_names:
+        X = np.array(data['statement'])
+    else:
+        X = np.array(data['text'])
+    y = np.array(data['label'])
 
     # Reshape the features
     X_reshaped = X.reshape(-1, 1)
@@ -133,13 +147,10 @@ def display_samples(dataset, num_samples=5):
 def compute_metrics(eval_pred):
     metric = evaluate.load("accuracy")
     logits, labels = eval_pred
-    print(labels)
     predictions = np.argmax(logits, axis=1)
     return metric.compute(predictions=predictions, references=labels)
 
-def evaluate_performance(trainer, inputs):
-    from torch import from_numpy
-    
+def evaluate_performance(trainer, inputs, label='Train Classifier'):
     # basic evaluation of model
     trainer.evaluate(inputs)
 
@@ -158,11 +169,14 @@ def evaluate_performance(trainer, inputs):
 
     cm = confusion_matrix(y_true_labels, y_pred_labels)
     sns.heatmap(cm, annot=True)
+    plt.title(f'Confusion Matrix for {label}')
+    plt.xlabel('Predicted Label', fontsize=10)
+    plt.ylabel('True Label', fontsize=10)
     plt.show()
 
-def get_roc_curve(model, inputs):
+def get_roc_curve(trainer, inputs):
     y_pred = trainer.predict(inputs)
-    y_proba = softmax(torch.tensor(y_pred.predictions))
+    y_proba = softmax(tensor(y_pred.predictions), dim=1)
 
     y_true_labels = y_pred.label_ids
 
@@ -171,11 +185,11 @@ def get_roc_curve(model, inputs):
     return fpr, tpr, threshold
 
 
-def plot_roc_curves(model, inputs, label='Train Classifier'):
+def plot_roc_curves(trainer, inputs, label='Train Classifier'):
     def plot_roc_curve(fpr, tpr, label=None, color='b'):
         plt.plot(fpr, tpr, label=label, color=color)
 
-    fpr, tpr, threshold = get_roc_curve(model, inputs)
+    fpr, tpr, threshold = get_roc_curve(trainer, inputs)
 
     plt.figure(figsize=(7, 5))
     plt.title(f'ROC Curve for {label}')
@@ -207,12 +221,3 @@ def compute_metrics(eval_pred):
     logits, labels = eval_pred
     predictions = np.argmax(logits, axis=1)
     return metric.compute(predictions=predictions, references=labels)
-
-
-# def balance_dataset(dataset, split='train'):    
-#     df = pd.DataFrame(dataset[split])
-#     grouped_df = df.groupby('label')
-#     min_class = grouped_df.size().min()
-#     balanced_df = grouped_df.apply(lambda x: x.sample(n=min_class, replace=False)).reset_index(drop=True)
-    
-#     return Dataset.from_pandas(balanced_df)
