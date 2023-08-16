@@ -12,6 +12,8 @@ dotenv.load_dotenv()
 API_KEY = os.getenv('API_KEY')
 headers = {"Authorization": f"Bearer {API_KEY}"}
 
+print(API_KEY)
+
 model_type = 'uncased'
 MODEL_PATH = f'models/trained-classifier-{model_type}-statement'
 
