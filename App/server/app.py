@@ -13,7 +13,7 @@ API_KEY = os.getenv('API_KEY')
 headers = {"Authorization": f"Bearer {API_KEY}"}
 
 model_type = 'uncased'
-MODEL_PATH = 'trained-classifier-{model_type}-statement'
+MODEL_PATH = f'models/trained-classifier-{model_type}-statement'
 
 API_URL_cased = f"https://api-inference.huggingface.co/models/caballeroch/FakeNewsClassifierDistilBert-{model_type}"
 API_URL_uncased = f"https://api-inference.huggingface.co/models/caballeroch/FakeNewsClassifierDistilBert-{model_type}"
@@ -35,11 +35,20 @@ def serve_static(filename):
 @app.route('/classify', methods=['POST'])
 def classify():
     text = request.form['text']
-    # result = classify_text(text)
-    result = classify_with_loaded_model(text)
+    result = classify_text(text)
+    # result = classify_with_loaded_model(text)
 
     return jsonify({'result': result})
 
+@app.route('/select_model', methods=['POST'])
+def select_model():
+    model_type = request.form['text']
+    print(model_type)
+    API_URL = API_URL_cased if model_type == 'cased' else API_URL_uncased
+    MODEL_PATH = f'trained-classifier-{model_type}-statement'
+    
+    return jsonify({'model': model_type})
+    
 def load_model_and_tokenizer():
     model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
     tokenizer = AutoTokenizer.from_pretrained('distilbert-base-uncased')
@@ -47,6 +56,11 @@ def load_model_and_tokenizer():
     return model, tokenizer
 
 def classify_with_loaded_model(text):
+    if len(text) == 0:
+        raise ValueError('Text must not be empty.')
+    
+    print('Calling Local Model')
+
     text = preprocessing_fn(text)
     inputs = tokenizer(
         text,
@@ -66,10 +80,20 @@ def classify_with_loaded_model(text):
     return classification
     
 def classify_text(text):
+    if len(text) == 0:
+        raise ValueError('Text must not be empty.')
+
+    headers = {
+        'Authorization': f'Bearer {API_KEY}',
+        'Content-Type': 'application/json'
+    }
+    
+    print('Calling Huggingface API')
+    
     payload = {
         "inputs": text
     }
-    response = requests.post(API_URL, json=payload)
+    response = requests.post(API_URL, headers=headers, json=payload)
     result = response.json()
 
     print(result)
@@ -82,6 +106,6 @@ def classify_text(text):
     return classification
 
 if __name__ == '__main__':
-    model, tokenizer = load_model_and_tokenizer()
-    model.eval()
+    # model, tokenizer = load_model_and_tokenizer()
+    # model.eval()
     app.run()
